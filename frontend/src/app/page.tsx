@@ -264,7 +264,22 @@ export default function Home() {
                     <div className="grid grid-cols-2 gap-2 mb-4">
                       <div>
                         <span className="font-medium">색상:</span> 
-                        <Badge variant="outline" className="ml-2">{analysisResult.color}</Badge>
+                        {analysisResult.color.includes('%') ? (
+                          // 여러 색상인 경우
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {analysisResult.color.split(', ').map((colorInfo, idx) => {
+                              const [colorName, percentage] = colorInfo.split('(');
+                              return (
+                                <Badge key={idx} variant="outline" className="ml-0">
+                                  {colorName} <span className="opacity-75">({percentage}</span>
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          // 단일 색상인 경우
+                          <Badge variant="outline" className="ml-2">{analysisResult.color}</Badge>
+                        )}
                       </div>
                       <div>
                         <span className="font-medium">재질:</span> 

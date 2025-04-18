@@ -290,32 +290,32 @@ async def remove_bg_endpoint(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 def analyze_color(img):
-    """알약의 주 색상 분석 개선"""
+    """알약의 색상 분석 - 여러 색상 감지 지원"""
     try:
         # HSV 색상 공간으로 변환 (색상 인식에 더 적합)
         img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
         img_reshaped = img_hsv.reshape((-1, 3))
         
-        # 여러 클러스터 사용 (더 다양한 색상 추출)
+        # 여러 클러스터 사용 (여러 색상 추출)
         kmeans = KMeans(n_clusters=3)
         kmeans.fit(img_reshaped)
         
-        # 가장 많이 나타나는 색상 찾기
+        # 각 클러스터의 크기(픽셀 수) 계산
         unique_labels, counts = np.unique(kmeans.labels_, return_counts=True)
-        dominant_cluster = unique_labels[np.argmax(counts)]
-        dominant_color_hsv = kmeans.cluster_centers_[dominant_cluster]
         
-        # HSV에서 RGB로 변환
-        dominant_color_rgb = cv2.cvtColor(np.uint8([[dominant_color_hsv]]), cv2.COLOR_HSV2RGB)[0][0]
-        r, g, b = dominant_color_rgb
+        # 클러스터를 크기 순으로 정렬 (내림차순)
+        sorted_indices = np.argsort(counts)[::-1]
+        sorted_counts = counts[sorted_indices]
+        sorted_labels = unique_labels[sorted_indices]
         
-        # 노란색 판별 개선 (HSV에서 더 정확히 판별 가능)
-        h, s, v = dominant_color_hsv
-        if (20 <= h <= 60) and s > 50:  # 노란색 범위
-            return "노란색"
+        # 전체 픽셀 수
+        total_pixels = np.sum(counts)
         
-        # 이전 색상 판별 로직
-        colors = {
+        # 색상 이름과 비율을 저장할 리스트
+        colors = []
+        
+        # 색상 이름 사전
+        color_names = {
             '빨간색': (255, 0, 0),
             '초록색': (0, 255, 0),
             '파란색': (0, 0, 255),
@@ -329,16 +329,50 @@ def analyze_color(img):
             '회색': (128, 128, 128)
         }
         
-        min_distance = float('inf')
-        color_name = '알 수 없음'
+        # 중요한 클러스터만 처리 (5% 이상 차지하는 색상)
+        for i, label in enumerate(sorted_labels):
+            # 해당 클러스터가 전체의 5% 미만이면 무시
+            if sorted_counts[i] / total_pixels < 0.05:
+                continue
+                
+            # HSV 색상 가져오기
+            color_hsv = kmeans.cluster_centers_[label]
+            
+            # HSV에서 RGB로 변환
+            color_rgb = cv2.cvtColor(np.uint8([[color_hsv]]), cv2.COLOR_HSV2RGB)[0][0]
+            r, g, b = color_rgb
+            
+            # 노란색 특별 처리 (HSV에서 더 정확히 판별 가능)
+            h, s, v = color_hsv
+            color_name = None
+            
+            if (20 <= h <= 60) and s > 50:  # 노란색 범위
+                color_name = "노란색"
+            else:
+                # 가장 가까운 색상 찾기
+                min_distance = float('inf')
+                
+                for name, (cr, cg, cb) in color_names.items():
+                    distance = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
+                    if distance < min_distance:
+                        min_distance = distance
+                        color_name = name
+            
+            # 색상과 점유율(%) 추가
+            percentage = round((sorted_counts[i] / total_pixels) * 100)
+            colors.append((color_name, percentage))
         
-        for name, (cr, cg, cb) in colors.items():
-            distance = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
-            if distance < min_distance:
-                min_distance = distance
-                color_name = name
-        
-        return color_name
+        # 결과 형식화
+        if not colors:
+            return "알 수 없음"
+        elif len(colors) == 1:
+            return colors[0][0]  # 단일 색상인 경우 색상명만 반환
+        else:
+            # 여러 색상인 경우 "주 색상(xx%), 부 색상(xx%)" 형식으로 반환
+            main_color, main_pct = colors[0]
+            secondary_color, sec_pct = colors[1]
+            return f"{main_color}({main_pct}%), {secondary_color}({sec_pct}%)"
+            
     except Exception as e:
         logger.error(f"Error in color analysis: {str(e)}")
         return "알 수 없음"
