@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import RemoveBgButton from '@/components/RemoveBgButton';
 
 // 약품 분석 결과 타입 정의
 interface PillAnalysisResult {
@@ -16,12 +17,24 @@ interface PillAnalysisResult {
   purpose?: string;
 }
 
+// 탐지 결과 타입 정의
+interface Detection {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  confidence: number;
+  class: number;
+  class_name: string;
+}
+
 export default function Home() {
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [detections, setDetections] = useState<any[]>([]);
+  const [detections, setDetections] = useState<Detection[]>([]);
   const [loading, setLoading] = useState(false);
   const [croppedImage, setCroppedImage] = useState<string | null>(null);
+  const [processedImage, setProcessedImage] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<PillAnalysisResult | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
 
@@ -37,6 +50,7 @@ export default function Home() {
       // 새 이미지 업로드 시 기존 결과 초기화
       setDetections([]);
       setCroppedImage(null);
+      setProcessedImage(null);
       setAnalysisResult(null);
     }
   };
@@ -214,6 +228,22 @@ export default function Home() {
                 <div className="flex justify-center mb-4">
                   <img src={croppedImage} alt="Cropped" className="max-h-48" />
                 </div>
+                
+                {!processedImage && (
+                  <RemoveBgButton
+                    image={image}
+                    setProcessedImage={setProcessedImage}
+                  />
+                )}
+                
+                {processedImage && (
+                  <div className="mt-4">
+                    <h2 className="text-xl font-semibold mb-2">배경 제거된 이미지</h2>
+                    <div className="flex justify-center mb-4 p-2 bg-gray-100 rounded">
+                      <img src={processedImage} alt="No Background" className="max-h-48" />
+                    </div>
+                  </div>
+                )}
                 
                 {analysisLoading ? (
                   <div className="text-center py-4">
