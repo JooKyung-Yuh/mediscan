@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import RemoveBgButton from '@/components/RemoveBgButton';
 
 // 약품 분석 결과 타입 정의
 interface PillAnalysisResult {
@@ -12,6 +11,7 @@ interface PillAnalysisResult {
   texture: string;
   shape: string;
   text: string;
+  image_no_bg?: string; // 배경 제거된 이미지의 base64 문자열
   drugName?: string;
   ingredients?: string;
   purpose?: string;
@@ -138,6 +138,12 @@ export default function Home() {
       
       const analysisData = await analysisResponse.json();
       console.log('Analysis result:', analysisData);
+      
+      // 응답에 배경 제거된 이미지가 포함되어 있다면 설정
+      if (analysisData.image_no_bg) {
+        setProcessedImage(analysisData.image_no_bg);
+      }
+      
       setAnalysisResult(analysisData);
     } catch (error) {
       console.error('Error analyzing pill:', error);
@@ -229,18 +235,16 @@ export default function Home() {
                   <img src={croppedImage} alt="Cropped" className="max-h-48" />
                 </div>
                 
-                {!processedImage && (
-                  <RemoveBgButton
-                    image={image}
-                    setProcessedImage={setProcessedImage}
-                  />
-                )}
-                
                 {processedImage && (
                   <div className="mt-4">
                     <h2 className="text-xl font-semibold mb-2">배경 제거된 이미지</h2>
                     <div className="flex justify-center mb-4 p-2 bg-gray-100 rounded">
-                      <img src={processedImage} alt="No Background" className="max-h-48" />
+                      <img 
+                        src={processedImage} 
+                        alt="No Background" 
+                        className="w-auto max-w-full" 
+                        style={{ maxHeight: '300px', objectFit: 'contain' }} 
+                      />
                     </div>
                   </div>
                 )}

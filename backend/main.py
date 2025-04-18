@@ -9,17 +9,11 @@ from PIL import Image
 import io
 import torch
 import logging
-import importlib
-from torch.nn.modules.container import Sequential
-from ultralytics.nn.modules import Conv, C2f, SPPF, Detect
-from ultralytics.nn.tasks import DetectionModel
-# 추가 모듈 임포트
-import ultralytics.nn.modules
-import ultralytics.nn.tasks
-from ultralytics import YOLO
 import easyocr
 from sklearn.cluster import KMeans
 import os
+import contextlib
+import base64
 
 # 배경 제거 모듈 임포트
 from remove_bg import remove_background, remove_background_from_numpy
@@ -39,44 +33,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ultralytics 모듈에서 모든 클래스 가져오기
-def add_all_nn_modules_to_safe_globals():
-    # ultralytics.nn.modules에서 모든 클래스 추가
-    for attr_name in dir(ultralytics.nn.modules):
-        attr = getattr(ultralytics.nn.modules, attr_name)
-        if isinstance(attr, type):  # 클래스인 경우만 추가
-            try:
-                torch.serialization.add_safe_globals([attr])
-                logger.info(f"Added {attr.__name__} to safe globals")
-            except Exception as e:
-                logger.error(f"Failed to add {attr_name}: {str(e)}")
+# PyTorch 2.6에서 weights_only 옵션을 False로 설정하기 위한 컨텍스트 매니저
+@contextlib.contextmanager
+def torch_load_with_weights_only_false():
+    """PyTorch 2.6에서 weights_only=False로 torch.load를 사용하기 위한 컨텍스트 매니저"""
+    original_load = torch.load
     
-    # ultralytics.nn.tasks에서 모든 클래스 추가
-    for attr_name in dir(ultralytics.nn.tasks):
-        attr = getattr(ultralytics.nn.tasks, attr_name)
-        if isinstance(attr, type):  # 클래스인 경우만 추가
-            try:
-                torch.serialization.add_safe_globals([attr])
-                logger.info(f"Added {attr.__name__} to safe globals")
-            except Exception as e:
-                logger.error(f"Failed to add {attr_name}: {str(e)}")
-
-# 기본 안전한 글로벌 설정
-torch.serialization.add_safe_globals([Sequential])
-torch.serialization.add_safe_globals([Conv])
-torch.serialization.add_safe_globals([C2f])
-torch.serialization.add_safe_globals([SPPF])
-torch.serialization.add_safe_globals([Detect])
-torch.serialization.add_safe_globals([DetectionModel])
-
-# 모든 관련 모듈을 safe_globals에 추가
-add_all_nn_modules_to_safe_globals()
+    def patched_load(*args, **kwargs):
+        # weights_only 파라미터 추가 (2.6에서 기본값이 True로 변경됨)
+        kwargs['weights_only'] = False
+        return original_load(*args, **kwargs)
+    
+    # 함수 교체
+    torch.load = patched_load
+    try:
+        yield
+    finally:
+        # 원래 함수 복원
+        torch.load = original_load
 
 # YOLO 모델 로드 시도
 try:
-    logger.info("Loading YOLO model with safe globals...")
-    # 직접 모델 경로 지정하여 로드
-    yolo_model = YOLO('yolov8n.pt')
+    logger.info("Attempting to load YOLO model with weights_only=False...")
+    
+    # 안전한 클래스 추가 시도
+    try:
+        import torch.serialization
+        from ultralytics import YOLO
+        import ultralytics.nn.modules
+        logger.info("Adding safe globals for YOLO model...")
+        for module_name in dir(ultralytics.nn.modules):
+            if not module_name.startswith('__'):
+                try:
+                    module = getattr(ultralytics.nn.modules, module_name)
+                    if isinstance(module, type):
+                        torch.serialization.add_safe_globals([module])
+                except Exception as e:
+                    logger.warning(f"Failed to add {module_name} to safe globals: {str(e)}")
+    except Exception as e:
+        logger.warning(f"Failed to setup safe globals: {str(e)}")
+    
+    # PyTorch 2.6 컨텍스트 매니저 사용
+    with torch_load_with_weights_only_false():
+        # YOLO 모델 로드
+        yolo_model = YOLO('yolov8n.pt')
+    
     logger.info("YOLO model loaded successfully")
 except Exception as e:
     logger.error(f"Failed to load YOLO model: {str(e)}")
@@ -147,7 +148,7 @@ async def analyze_pill(image: UploadFile = File(...)):
                     "class_name": result.names[int(box.cls[0])]  # 클래스 이름 추가
                 })
         
-        # 가장 큰 바운딩 박스만 선택
+        # 가장 큰 바운딩 박스만 선택 (여러 개 감지된 경우)
         if detections:
             areas = [(d["x2"] - d["x1"]) * (d["y2"] - d["y1"]) for d in detections]
             max_area_idx = areas.index(max(areas))
@@ -173,9 +174,58 @@ async def analyze_pill_details(croppedImage: UploadFile = File(...)):
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
         
-        # 이미지 전처리 (크기 조정, 노이즈 제거)
-        img = cv2.resize(img, (300, 300))  # 분석을 위한 크기 조정
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # 원본 이미지 크기 저장
+        original_height, original_width = img.shape[:2]
+        logger.info(f"Original image dimensions: {original_width}x{original_height}")
+        
+        # 배경 제거 수행
+        logger.info("Removing background from cropped pill image")
+        try:
+            img_no_bg = await remove_background_from_numpy(img)
+            logger.info("Background removal completed")
+            
+            # 배경 제거 후 크기 비교
+            bg_removed_height, bg_removed_width = img_no_bg.shape[:2]
+            logger.info(f"Background removed image dimensions: {bg_removed_width}x{bg_removed_height}")
+            
+            # 크기가 변경되었는지 확인
+            if original_height != bg_removed_height or original_width != bg_removed_width:
+                logger.warning(f"Size changed after background removal. Resizing back to original dimensions.")
+                img_no_bg = cv2.resize(img_no_bg, (original_width, original_height))
+                logger.info(f"Resized back to original dimensions: {original_width}x{original_height}")
+            
+            # 배경이 제거된 이미지를 base64로 인코딩하여 전송
+            # BGRA -> RGBA로 변환
+            if img_no_bg.shape[2] == 4:
+                img_rgba = cv2.cvtColor(img_no_bg, cv2.COLOR_BGRA2RGBA)
+            else:
+                img_rgba = cv2.cvtColor(img_no_bg, cv2.COLOR_BGR2RGBA)
+            
+            # PIL 이미지로 변환
+            pil_img = Image.fromarray(img_rgba)
+            
+            # 이미지를 base64로 인코딩
+            buffered = io.BytesIO()
+            pil_img.save(buffered, format="PNG")
+            img_base64 = f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"
+            
+        except Exception as e:
+            logger.warning(f"Background removal failed: {str(e)}, continuing with original image")
+            img_no_bg = img  # 실패 시 원본 이미지 사용
+            img_base64 = None
+        
+        # 분석을 위해 복사본 생성
+        img_for_analysis = img_no_bg.copy()
+        
+        # 이미지 전처리 (크기 조정, 노이즈 제거) - 분석용 이미지만 리사이즈
+        img_for_analysis = cv2.resize(img_for_analysis, (300, 300))  # 분석을 위한 크기 조정
+        
+        # BGRA → RGB로 변환 (배경 제거 결과는 일반적으로 알파 채널이 있음)
+        if img_for_analysis.shape[2] == 4:  # 알파 채널이 있는 경우
+            img_rgb = cv2.cvtColor(img_for_analysis, cv2.COLOR_BGRA2RGB)
+        else:
+            img_rgb = cv2.cvtColor(img_for_analysis, cv2.COLOR_BGR2RGB)
+            
         img_denoised = cv2.fastNlMeansDenoisingColored(img_rgb, None, 10, 10, 7, 21)
         
         # 1. 색상 분석
@@ -197,7 +247,8 @@ async def analyze_pill_details(croppedImage: UploadFile = File(...)):
             "color": color,
             "texture": texture,
             "shape": shape,
-            "text": text
+            "text": text,
+            "image_no_bg": img_base64  # 배경이 제거된 이미지 추가
         }
         
         # 약품 정보가 있으면 추가
@@ -357,85 +408,58 @@ def analyze_text(img):
         if reader is None:
             return "OCR 분석 불가"
         
-        # 이미지 전처리 강화
+        # 이미지 전처리 - 각인이 잘 보이도록 대비 향상
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        enhanced = cv2.equalizeHist(gray)
         
-        # 다양한 전처리 방법 시도
-        processed_images = [
-            gray,  # 원본 그레이스케일
-            cv2.equalizeHist(gray),  # 히스토그램 평활화
-            cv2.GaussianBlur(gray, (5, 5), 0)  # 블러링
-        ]
+        # OCR 수행
+        results = reader.readtext(enhanced)
         
-        # 여러 전처리 이미지에 대해 OCR 수행
-        all_results = []
-        for processed_img in processed_images:
-            # 대비 개선
-            alpha = 1.5  # 대비 조정 계수
-            beta = 10    # 밝기 조정 계수
-            adjusted = cv2.convertScaleAbs(processed_img, alpha=alpha, beta=beta)
-            
-            # OCR 수행
-            results = reader.readtext(adjusted)
-            if results:
-                all_results.extend(results)
+        # 결과 처리
+        if results:
+            texts = [text for _, text, confidence in results if confidence > 0.3]
+            if texts:
+                return ' '.join(texts)
         
-        if not all_results:
-            return "각인 없음"
-        
-        # 신뢰도가 높은 결과만 선택
-        confident_results = [result[1] for result in all_results if result[2] > 0.3]
-        if confident_results:
-            return ", ".join(confident_results)
-        else:
-            return "각인 인식 불확실"
+        return "각인 없음"
     except Exception as e:
-        logger.error(f"Error in text analysis: {str(e)}")
-        return "분석 실패"
+        logger.error(f"Error in OCR analysis: {str(e)}")
+        return "OCR 분석 오류"
 
 def get_pill_info(color: str, shape: str, text: str) -> Optional[Dict[str, str]]:
-    """색상, 모양, 각인을 바탕으로 약품 정보 조회 (모의 데이터)"""
-    # 실제로는 데이터베이스에서 조회해야 함
-    # 모의 데이터
-    mock_db = [
-        {
-            "color": "흰색",
-            "shape": "원형",
-            "text": "CP",
-            "drugName": "시프로플록사신",
-            "ingredients": "시프로플록사신 500mg",
-            "purpose": "항생제"
+    """
+    알약 정보 검색 (모의 데이터)
+    
+    Args:
+        color: 알약 색상
+        shape: 알약 모양
+        text: 알약 각인
+    
+    Returns:
+        Optional[Dict[str, str]]: 알약 정보 또는 None
+    """
+    # 모의 데이터 - 실제로는 데이터베이스 조회가 필요
+    pill_database = {
+        ("흰색", "타원형", "M"): {
+            "name": "아세트아미노펜",
+            "usage": "해열, 진통제",
+            "company": "약품제약",
+            "side_effects": "두통, 어지러움, 구역질"
         },
-        {
-            "color": "노란색",
-            "shape": "원형",
-            "text": "CP",
-            "drugName": "시프로플록사신",
-            "ingredients": "시프로플록사신 500mg",
-            "purpose": "항생제"
-        },
-        {
-            "color": "흰색",
-            "shape": "타원형",
-            "text": "A",
-            "drugName": "아스피린",
-            "ingredients": "아세틸살리실산 100mg",
-            "purpose": "진통제, 해열제"
+        ("노란색", "원형", "R"): {
+            "name": "이부프로펜",
+            "usage": "소염진통제",
+            "company": "건강약품",
+            "side_effects": "위장장애, 졸음"
         }
-    ]
+    }
     
-    # 일치하는 약품 찾기
-    for pill in mock_db:
-        if (pill["color"] == color and 
-            pill["shape"] == shape and 
-            pill["text"] == text):
-            return {
-                "drugName": pill["drugName"],
-                "ingredients": pill["ingredients"],
-                "purpose": pill["purpose"]
-            }
+    # 간단한 검색 로직 (실제로는 더 복잡한 매칭 알고리즘 필요)
+    for (db_color, db_shape, db_text), info in pill_database.items():
+        if color == db_color and shape == db_shape and db_text in text:
+            return info
     
-    # 일치하는 약품이 없으면 None 반환
+    # 매칭되는 정보가 없는 경우
     return None
 
 if __name__ == "__main__":

@@ -69,18 +69,28 @@ async def remove_background_from_numpy(img: np.ndarray) -> np.ndarray:
     """
     try:
         logger.info("Processing numpy array for background removal")
+        logger.info(f"Input image shape: {img.shape}")
         
         if session is None:
             raise HTTPException(status_code=500, detail="rembg library not available")
         
         # BGR에서 RGB로 변환 (rembg는 RGB 형식의 입력을 기대함)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        logger.info(f"RGB converted image shape: {img_rgb.shape}")
         
         # rembg를 사용하여 배경 제거
         output = remove(img_rgb, session=session)
+        logger.info(f"After rembg output shape: {output.shape}")
         
         # RGBA에서 BGRA로 변환
         output_bgra = cv2.cvtColor(output, cv2.COLOR_RGBA2BGRA)
+        logger.info(f"Final BGRA output shape: {output_bgra.shape}")
+        
+        # 원본 크기와 결과 크기가 다른 경우 리사이즈
+        if img.shape[:2] != output_bgra.shape[:2]:
+            logger.warning(f"Size mismatch detected! Resizing from {output_bgra.shape[:2]} to {img.shape[:2]}")
+            output_bgra = cv2.resize(output_bgra, (img.shape[1], img.shape[0]))
+            logger.info(f"After resize output shape: {output_bgra.shape}")
         
         logger.info("Background removal from numpy array completed successfully")
         return output_bgra
