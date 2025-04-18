@@ -238,7 +238,15 @@ async def analyze_pill_details(croppedImage: UploadFile = File(...)):
         shape = analyze_shape(img_denoised)
         
         # 4. 글씨 인식 (OCR)
-        text = analyze_text(img_denoised)
+        ocr_result = analyze_text(img_denoised)
+        # 새로운 형식(딕셔너리)으로 반환된 경우 처리
+        if isinstance(ocr_result, dict):
+            text = ocr_result["text"]
+            text_processed_images = ocr_result["processed_images"]
+        else:
+            # 이전 형식(문자열)으로 반환된 경우 대비
+            text = ocr_result
+            text_processed_images = {}
         
         # 5. 알약 데이터베이스 조회 (여기서는 모의 데이터 반환)
         pill_info = get_pill_info(color, shape, text)
@@ -248,7 +256,8 @@ async def analyze_pill_details(croppedImage: UploadFile = File(...)):
             "texture": texture,
             "shape": shape,
             "text": text,
-            "image_no_bg": img_base64  # 배경이 제거된 이미지 추가
+            "image_no_bg": img_base64,  # 배경이 제거된 이미지 추가
+            "text_processed_images": text_processed_images  # OCR 전처리 이미지 추가
         }
         
         # 약품 정보가 있으면 추가
@@ -437,28 +446,228 @@ def analyze_shape(img):
         return "알 수 없음"
 
 def analyze_text(img):
-    """OCR을 통한 알약 각인 텍스트 인식 개선"""
+    """OCR을 통한 알약 각인 텍스트 인식 개선 - 회전 및 음각 글자 지원"""
     try:
         if reader is None:
-            return "OCR 분석 불가"
+            return {"text": "OCR 분석 불가", "processed_images": []}
         
-        # 이미지 전처리 - 각인이 잘 보이도록 대비 향상
+        # 결과를 저장할 변수들
+        all_ocr_results = []
+        processed_images = {}  # 전처리된 이미지 저장
+        
+        # 알파 채널 처리 (배경 제거된 이미지인 경우)
+        if img.shape[2] == 4:  # RGBA 또는 BGRA
+            # 알파 채널을 마스크로 사용
+            alpha_channel = img[:, :, 3]
+            # 알파 값이 0인 곳 (배경)은 흰색으로 설정
+            mask = alpha_channel > 0
+            
+            # RGB 이미지 준비 (배경은 흰색)
+            rgb_img = np.ones((img.shape[0], img.shape[1], 3), dtype=np.uint8) * 255
+            rgb_img[mask] = img[mask, :3]
+            img = rgb_img
+        
+        # 그레이스케일로 변환
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        processed_images["원본(그레이스케일)"] = gray.copy()
+        
+        # 1. 기본 전처리 방법들
+        
+        # 1.1 히스토그램 평활화
         enhanced = cv2.equalizeHist(gray)
+        processed_images["히스토그램 평활화"] = enhanced.copy()
+        results1 = reader.readtext(enhanced)
+        if results1:
+            texts1 = [text for _, text, confidence in results1 if confidence > 0.3]
+            if texts1:
+                all_ocr_results.extend(texts1)
         
-        # OCR 수행
-        results = reader.readtext(enhanced)
+        # 1.2 이진화 (Otsu)
+        _, binary_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_images["이진화(Otsu)"] = binary_otsu.copy()
+        results2 = reader.readtext(binary_otsu)
+        if results2:
+            texts2 = [text for _, text, confidence in results2 if confidence > 0.3]
+            if texts2:
+                all_ocr_results.extend(texts2)
         
-        # 결과 처리
-        if results:
-            texts = [text for _, text, confidence in results if confidence > 0.3]
-            if texts:
-                return ' '.join(texts)
+        # 1.3 적응형 이진화
+        binary_adaptive = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+        processed_images["적응형 이진화"] = binary_adaptive.copy()
+        results3 = reader.readtext(binary_adaptive)
+        if results3:
+            texts3 = [text for _, text, confidence in results3 if confidence > 0.3]
+            if texts3:
+                all_ocr_results.extend(texts3)
         
-        return "각인 없음"
+        # 2. 음각 텍스트 강화 (음영 반전)
+        inverted = cv2.bitwise_not(gray)
+        processed_images["반전"] = inverted.copy()
+        # 음영 반전 + 히스토그램 평활화
+        inverted_enhanced = cv2.equalizeHist(inverted)
+        processed_images["반전 + 히스토그램 평활화"] = inverted_enhanced.copy()
+        results_inverted = reader.readtext(inverted_enhanced)
+        if results_inverted:
+            texts_inverted = [text for _, text, confidence in results_inverted if confidence > 0.3]
+            if texts_inverted:
+                all_ocr_results.extend(texts_inverted)
+        
+        # 3. 음각 강화 - 경계 검출 및 강화
+        # 경계 검출 (음각은 경계가 뚜렷함)
+        edges = cv2.Canny(gray, 100, 200)
+        processed_images["경계 검출"] = edges.copy()
+        # 경계를 두껍게 만들어 텍스트 윤곽 강화
+        kernel = np.ones((2, 2), np.uint8)
+        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+        processed_images["경계 강화"] = dilated_edges.copy()
+        results_edges = reader.readtext(dilated_edges)
+        if results_edges:
+            texts_edges = [text for _, text, confidence in results_edges if confidence > 0.3]
+            if texts_edges:
+                all_ocr_results.extend(texts_edges)
+        
+        # 4. 대비 강화 - 음각 텍스트가 더 잘 보이도록
+        # CLAHE(Contrast Limited Adaptive Histogram Equalization) 적용
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe_img = clahe.apply(gray)
+        processed_images["CLAHE 대비 강화"] = clahe_img.copy()
+        results_clahe = reader.readtext(clahe_img)
+        if results_clahe:
+            texts_clahe = [text for _, text, confidence in results_clahe if confidence > 0.3]
+            if texts_clahe:
+                all_ocr_results.extend(texts_clahe)
+        
+        # 5. 회전된 이미지 처리
+        # 다양한 각도로 회전시켜 인식 시도
+        best_rotated_angle = None
+        best_rotated_text = None
+        best_rotated_confidence = 0
+        
+        for angle in [90, 180, 270, 30, 60, 120, 150, 210, 240, 300, 330]:
+            # 회전 변환 행렬 생성
+            height, width = gray.shape
+            center = (width // 2, height // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            
+            # 이미지 회전
+            rotated = cv2.warpAffine(gray, rotation_matrix, (width, height), 
+                                    flags=cv2.INTER_LINEAR, 
+                                    borderMode=cv2.BORDER_CONSTANT, 
+                                    borderValue=255)
+            
+            # 회전된 이미지에 대해 OCR 수행
+            rotated_results = reader.readtext(rotated)
+            if rotated_results:
+                for _, text, confidence in rotated_results:
+                    if confidence > 0.4 and text.strip():  # 회전된 이미지는 신뢰도 임계값을 약간 높임
+                        all_ocr_results.append(text)
+                        # 가장 좋은 회전 결과 저장
+                        if confidence > best_rotated_confidence and len(text) > 1:
+                            best_rotated_confidence = confidence
+                            best_rotated_text = text
+                            best_rotated_angle = angle
+        
+        # 가장 좋은 회전 결과가 있으면 이미지 저장
+        if best_rotated_angle is not None:
+            height, width = gray.shape
+            center = (width // 2, height // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, best_rotated_angle, 1.0)
+            best_rotated = cv2.warpAffine(gray, rotation_matrix, (width, height), 
+                                        flags=cv2.INTER_LINEAR, 
+                                        borderMode=cv2.BORDER_CONSTANT, 
+                                        borderValue=255)
+            processed_images[f"회전 {best_rotated_angle}° ({best_rotated_text})"] = best_rotated
+        
+        # 6. 모든 결과를 종합하고 중복 제거
+        final_text = "각인 없음"
+        if all_ocr_results:
+            # 중복 제거 및 문자열 정리
+            unique_texts = []
+            for text in all_ocr_results:
+                # 숫자와 알파벳만 유지하고 공백 제거
+                cleaned_text = ''.join(c for c in text if c.isalnum())
+                if cleaned_text and cleaned_text not in unique_texts:
+                    unique_texts.append(cleaned_text)
+            
+            if unique_texts:
+                # 가장 긴 텍스트를 우선 반환 (일반적으로 더 완전한 인식 결과)
+                sorted_texts = sorted(unique_texts, key=len, reverse=True)
+                # 너무 많은 결과는 혼란스러울 수 있으므로 상위 3개만 반환
+                final_text = ' '.join(sorted_texts[:3])
+        
+        # 7. 윤곽선 영역에서 추가 검사 (이미 좋은 결과가 있으면 스킵)
+        if final_text == "각인 없음":
+            # 이진화 이미지에서 작은 윤곽선 찾기 (텍스트 각인은 대개 작은 영역)
+            contours, _ = cv2.findContours(binary_otsu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # 윤곽선 시각화
+            contour_img = np.zeros_like(gray)
+            cv2.drawContours(contour_img, contours, -1, 255, 1)
+            processed_images["윤곽선 탐지"] = contour_img.copy()
+            
+            text_regions = []
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                # 작은 윤곽선 (텍스트 후보)
+                if 10 < area < 500:  # 크기 범위 조정
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    # 텍스트 비율에 가까운 윤곽선
+                    if 0.2 < w/h < 5:  # 매우 긴 직사각형 또는 정사각형에 가까운 것은 제외
+                        # 관심 영역 추출
+                        roi = gray[y:y+h, x:x+w]
+                        # 크기가 너무 작으면 확대
+                        if roi.shape[0] < 20 or roi.shape[1] < 20:
+                            roi = cv2.resize(roi, (roi.shape[1]*2, roi.shape[0]*2))
+                        text_regions.append(roi)
+            
+            # 각 텍스트 영역에 대해 OCR 수행
+            region_results = []
+            for i, region in enumerate(text_regions[:5]):  # 최대 5개 영역만 처리
+                # 전처리된 이미지 저장
+                processed_images[f"관심영역 {i+1}"] = region.copy()
+                
+                # 원본, 반전, CLAHE 적용된 버전으로 시도
+                for r_img in [region, cv2.bitwise_not(region), clahe.apply(region)]:
+                    result_region = reader.readtext(r_img)
+                    if result_region:
+                        for _, text, confidence in result_region:
+                            if confidence > 0.3 and text.strip():
+                                # 숫자와 알파벳만 유지
+                                cleaned_text = ''.join(c for c in text if c.isalnum())
+                                if cleaned_text:
+                                    region_results.append(cleaned_text)
+            
+            if region_results:
+                # 중복 제거
+                unique_region_results = list(set(region_results))
+                final_text = ' '.join(sorted(unique_region_results, key=len, reverse=True)[:2])
+        
+        # 전처리된 이미지를 base64로 인코딩
+        encoded_images = {}
+        for name, proc_img in processed_images.items():
+            # 그레이스케일 이미지를 3채널로 변환
+            if len(proc_img.shape) == 2:
+                proc_img = cv2.cvtColor(proc_img, cv2.COLOR_GRAY2RGB)
+                
+            # PIL 이미지로 변환
+            pil_img = Image.fromarray(proc_img)
+            
+            # 이미지를 base64로 인코딩
+            buffered = io.BytesIO()
+            pil_img.save(buffered, format="PNG")
+            img_base64 = f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode('utf-8')}"
+            encoded_images[name] = img_base64
+        
+        # 결과 반환
+        return {
+            "text": final_text,
+            "processed_images": encoded_images
+        }
     except Exception as e:
         logger.error(f"Error in OCR analysis: {str(e)}")
-        return "OCR 분석 오류"
+        return {"text": "OCR 분석 오류", "processed_images": {}}
 
 def get_pill_info(color: str, shape: str, text: str) -> Optional[Dict[str, str]]:
     """
