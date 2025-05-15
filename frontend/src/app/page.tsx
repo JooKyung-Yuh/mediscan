@@ -12,6 +12,7 @@ interface PillAnalysisResult {
   shape: string;
   text: string;
   image_no_bg?: string; // 배경 제거된 이미지의 base64 문자열
+  text_processed_images?: Record<string, string>; // OCR 전처리 이미지들
   drugName?: string;
   ingredients?: string;
   purpose?: string;
@@ -307,6 +308,115 @@ export default function Home() {
                     ) : (
                       <div className="border-t pt-3 mt-3 text-center text-gray-500">
                         <p>일치하는 약품 정보를 찾을 수 없습니다.</p>
+                      </div>
+                    )}
+                    
+                    {/* OCR 전처리 이미지 표시 */}
+                    {analysisResult.text_processed_images && 
+                     Object.keys(analysisResult.text_processed_images).length > 0 && (
+                      <div className="border-t pt-3 mt-3">
+                        <div className="flex justify-between items-center mb-2">
+                          <h4 className="font-semibold">OCR 전처리 이미지</h4>
+                          <button
+                            onClick={() => document.getElementById('ocr-images-main')?.classList.toggle('hidden')}
+                            className="text-xs text-blue-600 underline"
+                          >
+                            보기/숨기기
+                          </button>
+                        </div>
+                        
+                        <div id="ocr-images-main" className="hidden space-y-3">
+                          {/* 이미지를 그룹으로 구성 */}
+                          <div>
+                            <div className="flex justify-between items-center bg-gray-100 p-2 rounded cursor-pointer"
+                                 onClick={() => document.getElementById('basic-group')?.classList.toggle('hidden')}>
+                              <h5 className="font-medium text-sm">기본 전처리</h5>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </div>
+                            <div id="basic-group" className="grid grid-cols-2 gap-2 mt-2 p-2">
+                              {Object.entries(analysisResult.text_processed_images)
+                                .filter(([name]) => ['원본(그레이스케일)', '히스토그램 평활화', '이진화(Otsu)', '적응형 이진화'].includes(name))
+                                .map(([name, src], index) => (
+                                  <div key={index} className="border p-2 rounded bg-gray-50">
+                                    <p className="text-xs text-center mb-1 truncate font-medium">{name}</p>
+                                    <img src={src} alt={name} className="max-h-24 w-auto mx-auto" />
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <div className="flex justify-between items-center bg-gray-100 p-2 rounded cursor-pointer"
+                                 onClick={() => document.getElementById('inversion-group')?.classList.toggle('hidden')}>
+                              <h5 className="font-medium text-sm">음각 텍스트 강화</h5>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </div>
+                            <div id="inversion-group" className="grid grid-cols-2 gap-2 mt-2 p-2">
+                              {Object.entries(analysisResult.text_processed_images)
+                                .filter(([name]) => ['반전', '반전 + 히스토그램 평활화', 'CLAHE 대비 강화'].includes(name))
+                                .map(([name, src], index) => (
+                                  <div key={index} className="border p-2 rounded bg-gray-50">
+                                    <p className="text-xs text-center mb-1 truncate font-medium">{name}</p>
+                                    <img src={src} alt={name} className="max-h-24 w-auto mx-auto" />
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <div className="flex justify-between items-center bg-gray-100 p-2 rounded cursor-pointer"
+                                 onClick={() => document.getElementById('edge-group')?.classList.toggle('hidden')}>
+                              <h5 className="font-medium text-sm">경계 검출 및 강화</h5>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </div>
+                            <div id="edge-group" className="grid grid-cols-2 gap-2 mt-2 p-2">
+                              {Object.entries(analysisResult.text_processed_images)
+                                .filter(([name]) => ['경계 검출', '경계 강화', '윤곽선 탐지'].includes(name))
+                                .map(([name, src], index) => (
+                                  <div key={index} className="border p-2 rounded bg-gray-50">
+                                    <p className="text-xs text-center mb-1 truncate font-medium">{name}</p>
+                                    <img src={src} alt={name} className="max-h-24 w-auto mx-auto" />
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <div className="flex justify-between items-center bg-gray-100 p-2 rounded cursor-pointer"
+                                 onClick={() => document.getElementById('rotation-group')?.classList.toggle('hidden')}>
+                              <h5 className="font-medium text-sm">회전 처리</h5>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </div>
+                            <div id="rotation-group" className="grid grid-cols-2 gap-2 mt-2 p-2">
+                              {Object.entries(analysisResult.text_processed_images)
+                                .filter(([name]) => name.includes('회전'))
+                                .map(([name, src], index) => (
+                                  <div key={index} className="border p-2 rounded bg-gray-50">
+                                    <p className="text-xs text-center mb-1 truncate font-medium">{name}</p>
+                                    <img src={src} alt={name} className="max-h-24 w-auto mx-auto" />
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <div className="flex justify-between items-center bg-gray-100 p-2 rounded cursor-pointer"
+                                 onClick={() => document.getElementById('roi-group')?.classList.toggle('hidden')}>
+                              <h5 className="font-medium text-sm">관심 영역</h5>
+                              <span className="text-xs text-gray-500">▼</span>
+                            </div>
+                            <div id="roi-group" className="grid grid-cols-2 gap-2 mt-2 p-2">
+                              {Object.entries(analysisResult.text_processed_images)
+                                .filter(([name]) => name.includes('관심영역'))
+                                .map(([name, src], index) => (
+                                  <div key={index} className="border p-2 rounded bg-gray-50">
+                                    <p className="text-xs text-center mb-1 truncate font-medium">{name}</p>
+                                    <img src={src} alt={name} className="max-h-24 w-auto mx-auto" />
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
