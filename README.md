@@ -1,11 +1,5 @@
 # MEDISCAN
 
-<div align="center">
-  <img src="frontend/public/logo.png" alt="MEDISCAN Logo" width="200"/>
-  <br/>
-  <p><strong>의약품 이미지 분석 및 식별 시스템</strong></p>
-</div>
-
 ## 📋 프로젝트 소개
 
 MEDISCAN은 의약품 이미지를 분석하여 식별 정보를 제공하는 웹 애플리케이션입니다. 사용자가 의약품 이미지를 업로드하면 다음과 같은 정보를 분석합니다:
@@ -148,11 +142,3 @@ pytest
 
 이 프로젝트는 MIT 라이선스를 따릅니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
 
-## 👥 팀원
-
-- [팀원 이름] - 역할
-- [팀원 이름] - 역할
-
-## 📞 문의
-
-프로젝트에 대한 문의사항이 있으시면 이슈를 생성해주세요. 
